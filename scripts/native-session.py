@@ -147,7 +147,7 @@ def main():
         retire_legacy_services('--retire-legacy-services' in sys.argv)
         grd_env = dict(env, DCONF_PROFILE=str(CONFIG / 'dconf-profile'), XDG_DATA_HOME=str(DATA / 'rdp'),
                        GRD_TAKEOVER_SOCKET=str(gate), GRD_NATIVE_TAKEOVER='1',
-                       LD_LIBRARY_PATH=str(ROOT / 'vendor/grd-deps/root/usr/lib/x86_64-linux-gnu'))
+                       LD_LIBRARY_PATH=str(ROOT / 'build/grd-prefix/lib/x86_64-linux-gnu'))
         if gateway_enabled:
             grd_env['GRD_NATIVE_LOOPBACK'] = '1'
         if greeter:

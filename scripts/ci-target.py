@@ -14,7 +14,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / 'build/target-ci'
-PROFILE = 'ubuntu-26.04-amd64-gnome-50.1-updates-20261029'
+PROFILE = 'ubuntu-26.04-amd64-gnome-50.1-host-20261110'
 
 
 def digest(path):

@@ -375,6 +375,8 @@ def main():
         wait_for(lambda: monitor_count() == 1, 'remote layout was not applied')
     if '--greeter-probe' in sys.argv:
         window = harness.wait_for_client_window(first, client_env, 'NativeRDPTest')
+        # The X11 window appears before FreeRDP has finished enabling RDP input.
+        time.sleep(3)
         for command in (['windowfocus',window], ['type','--clearmodifiers','greeter-input-over-rdp']):
             subprocess.run(['xdotool',*command],env=client_env,check=True)
         wait_for(lambda: json.loads(state_file.read_text())['text'] == 'greeter-input-over-rdp', 'Greeter RDP input failed')
@@ -449,17 +451,19 @@ def main():
         return subprocess.check_output(['xdotool', *args], env=client_env, text=True).strip()
     wid = harness.wait_for_client_window(first, client_env, 'NativeRDPTest')
     xd('windowfocus', wid)
+    # The X11 window appears before FreeRDP has finished enabling RDP input.
+    time.sleep(3)
+    if SHELL and '--boot-guard' in sys.argv:
+        # GNOME Shell presents Overview after the startup guard unlocks. Close
+        # it through the RDP keyboard path before checking delivery to an app.
+        xd('key', 'Escape')
+        time.sleep(1)
     xd('type', '--clearmodifiers', '--delay', '60', 'native-original-session-123')
     from PIL import ImageGrab
     ImageGrab.grab(xdisplay=display).save(ART / 'rdp-original.png')
     wait_for(lambda: json.loads(state_file.read_text())['text'] == 'native-original-session-123',
              'RDP input did not reach original application')
     assert json.loads(state_file.read_text())['pid'] == app.pid
-    if SHELL and '--boot-guard' in sys.argv:
-        # The startup Overview can return after the first unlock. The initial
-        # client key may precede input setup; do this after verified typing.
-        xd('key', 'Super_L')
-        time.sleep(1)
     xd('mousemove', '--window', wid, '450', '380')
     time.sleep(.3)
     xd('mousemove_relative', '--', '1', '0')
