@@ -139,7 +139,7 @@
     "gnome-remote-desktop": "60423c896a54e3eacb65bd93167e91c1ce5e648c",
     "gvdb": "b54bc5da25127ef416858a3ad92e57159ff565b3",
     "patches": {
-      "patches/mutter-native-takeover.patch": "1f7a80421950de1c2e3f1ba68a068ea050901994f0ecf110351ff06694c1d7e1",
+      "patches/mutter-native-takeover.patch": "2b490adf1ac80d414e6068b14a36f872ac9efd41e2b4af292808ddc87d0a1c8b",
       "patches/grd-takeover.patch": "72e8a8a5ec940488de925e609c59ce4a8b4d1ce71c24e72adec354b803346b00",
       "patches/ubuntu-50.1-0ubuntu2.4/output-kms-Filter-fallback-modes-by-panel-supported-refre.patch": "1d6deae8dff38e54905405880b164ebc464ec80e92845c5f8bcc178dc99fe074",
       "patches/ubuntu-50.1-0ubuntu2.4/backends-monitor-manager-Fix-auto-rotate-on-phones-without.patch": "e7738af6c34c804848b68ea14c68db7d19cba00dfbd0634bbba128ff9ea8bbe1",
