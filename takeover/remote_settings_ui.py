@@ -19,14 +19,14 @@ def apply_scale(percent):
             line = connection.makefile('rb').readline(4096)
         if line == b'DENIED!\n':
             save_scale(percent)
-            return '已保存。当前服务仍是旧版，请重新登录 Ubuntu 后使用。'
+            return 'Saved. The running service is still the old version; log in to Ubuntu again to use it.'
         result = json.loads(line)
         if not result.get('ok'):
-            raise RuntimeError(result.get('error', '缩放设置未生效'))
-        return f'已设为 {percent}%。远程期间立即生效；本地显示设置保持独立。'
+            raise RuntimeError(result.get('error', 'Scale setting did not take effect'))
+        return f'Set to {percent}%. Takes effect immediately during a remote session; local display settings stay independent.'
     except (FileNotFoundError, ConnectionRefusedError):
         save_scale(percent)
-        return f'已保存 {percent}%，下次远程接管时生效。'
+        return f'Saved {percent}%; takes effect at the next remote takeover.'
 
 
 def main():
@@ -44,18 +44,18 @@ def main():
     app = Gtk.Application(application_id='local.takeover.RemoteSettings')
 
     def activate(app):
-        window = Gtk.ApplicationWindow(application=app, title='远程桌面设置')
+        window = Gtk.ApplicationWindow(application=app, title='Remote Desktop Settings')
         window.set_default_size(460, 230)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         for side in ('top', 'bottom', 'start', 'end'):
             getattr(box, 'set_margin_' + side)(24)
-        box.append(Gtk.Label(label='远程桌面缩放', xalign=0))
+        box.append(Gtk.Label(label='Remote desktop scale', xalign=0))
         selector = Gtk.DropDown.new_from_strings([f'{value}%' for value in SCALES])
         selector.set_selected(SCALES.index(load_scale()))
         box.append(selector)
-        status = Gtk.Label(label='调整文字和界面大小；断开远程后恢复本地显示布局。', wrap=True, xalign=0)
+        status = Gtk.Label(label='Adjust text and UI size; the local display layout is restored after the remote session disconnects.', wrap=True, xalign=0)
         box.append(status)
-        button = Gtk.Button(label='应用')
+        button = Gtk.Button(label='Apply')
         button.add_css_class('suggested-action')
         box.append(button)
 
@@ -71,7 +71,7 @@ def main():
                 try:
                     message = apply_scale(value)
                 except Exception as error:
-                    message = '未能应用：' + str(error)
+                    message = 'Could not apply: ' + str(error)
                 GLib.idle_add(completed, message)
             threading.Thread(target=work, daemon=True).start()
         button.connect('clicked', clicked)

@@ -546,7 +546,7 @@ def main():
                         'org.kde.impanel2', method, args, None, 0, 5000, None).unpack()
                 panel('SetRelativeSpotRectV2', GLib.Variant('(iiiid)', (500, 160, 2, 30, 1.5)))
                 panel('SetLookupTable', GLib.Variant('(asasasbbii)',
-                    (['1.', '2.'], ['测试候选一', '测试候选二'], ['', ''], False, False, 0, 0)))
+                    (['1.', '2.'], ['test candidate one', 'test candidate two'], ['', ''], False, False, 0, 0)))
                 observer.emit_signal(None, '/org/kde/impanel', 'org.kde.kimpanel.inputmethod',
                                      'ShowLookupTable', GLib.Variant('(b)', (True,)))
                 time.sleep(1)

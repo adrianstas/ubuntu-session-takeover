@@ -78,12 +78,12 @@ def _legacy_main():
             '[Service]\nType=simple\nExecStart=/usr/bin/python3 ' + str(ROOT / 'scripts/native-session.py') + '\n'
             'KillMode=control-group\nTimeoutStopSec=20\n',
         Path.home() / '.local/share/applications/ubuntu-native-takeover-settings.desktop':
-            '[Desktop Entry]\nType=Application\nName=远程桌面设置\n'
-            'Comment=调整远程接管桌面的缩放比例\n'
+            '[Desktop Entry]\nType=Application\nName=Remote Desktop Settings\n'
+            'Comment=Adjust the scale of the remotely taken-over desktop\n'
             'Exec=/usr/bin/python3 ' + str(ROOT / 'scripts/remote-settings.py') + '\n'
             'Icon=preferences-desktop-display\nTerminal=false\nCategories=Settings;DesktopSettings;\n',
         Path.home() / '.config/autostart/ubuntu-native-takeover.desktop':
-            '[Desktop Entry]\nType=Application\nName=原生桌面远程接管\n'
+            '[Desktop Entry]\nType=Application\nName=Native Desktop Remote Takeover\n'
             'Exec=/usr/bin/systemctl --user start ubuntu-native-takeover.service\n'
             'OnlyShowIn=GNOME;\nX-GNOME-Autostart-enabled=true\n',
     }
