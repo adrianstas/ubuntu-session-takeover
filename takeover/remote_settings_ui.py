@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import socket
 
-from takeover.remote_settings import SCALES, load_scale, save_scale, validate_scale
+from takeover.remote_settings import SCALES, load_scale, save_multi_monitor, save_scale, validate_scale
 
 
 def apply_scale(percent):
@@ -32,9 +32,16 @@ def apply_scale(percent):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--scale', type=int, choices=SCALES)
+    parser.add_argument('--multi-monitor', choices=('on', 'off'),
+                        help='Extra client monitors as remote-only monitors; applies when the remote backend next starts')
     args = parser.parse_args()
+    if args.multi_monitor is not None:
+        save_multi_monitor(args.multi_monitor == 'on')
+        print(f'Multiple monitors {args.multi_monitor}; takes effect when the remote backend next starts '
+              '(systemctl --user restart ubuntu-native-takeover.service while idle, or log in again).')
     if args.scale is not None:
         print(apply_scale(args.scale))
+    if args.scale is not None or args.multi_monitor is not None:
         return
     import gi
     gi.require_version('Gtk', '4.0')

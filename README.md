@@ -12,6 +12,7 @@ Experimental RDP takeover of the original GNOME Wayland session, with physical-s
 - Physical input is isolated after authentication. Physical outputs show a separate password-reclaim screen while remote capture keeps reading the desktop scene.
 - After the local password is verified through PAM, remote capture and input are revoked first, then local access is restored.
 - Remote resolution, scale and monitor layout can be changed temporarily; the saved layout is restored after disconnect. The temporary layout is never written to `monitors.xml`.
+- Multiple client monitors (for example mstsc "Use all my monitors", up to four): the primary client monitor is the taken-over desktop; every other client monitor becomes a remote-only Mutter virtual monitor at the client's position. Remote-only monitors are never shown on a physical output and disappear on disconnect or local reclaim. Only virtual monitors tagged by the leased GRD qualify; other screen casts stay behind the physical barrier. Disable with `scripts/remote-settings.py --multi-monitor off` (applies when the backend next starts). The GDM greeter stays single-screen.
 - Boot-login mode forwards RDP to the actual GDM greeter, then redirects to that user's physical desktop; no second working desktop is created.
 - When the startup-lock state is out of sync, confirmation is retried, and after a timeout local-authentication recovery is offered so the session does not stay on a privacy black screen forever.
 

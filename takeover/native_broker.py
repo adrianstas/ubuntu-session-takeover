@@ -22,14 +22,42 @@ NAME = 'org.gnome.Mutter.NativeTakeover'
 OBJECT = '/org/gnome/Mutter/NativeTakeover'
 
 
-def resolution_request(line, verb):
-    fields = line.split()
-    if len(fields) != 3 or fields[0] != verb:
-        raise ValueError('Invalid resolution request')
-    width, height = map(int, fields[1:])
+# GRD allows four client monitors: the viewport plus three remote-only ones.
+MAX_EXTRA_MONITORS = 3
+
+
+def _size(width, height):
     if not 200 <= width <= 8192 or not 200 <= height <= 8192:
         raise ValueError('Resolution outside 200..8192')
     return width, height
+
+
+def layout_request(line, verbs):
+    """Parse 'VERB w h [x y w h]...': the viewport, then extra monitors.
+
+    Extra positions are client pixels relative to the viewport's top-left.
+    """
+    fields = line.split()
+    if (not fields or fields[0] not in verbs or len(fields) < 3 or
+            (len(fields) - 3) % 4):
+        raise ValueError('Invalid layout request')
+    values = [int(value) for value in fields[1:]]
+    size = _size(*values[:2])
+    extras = tuple(tuple(values[i:i + 4]) for i in range(2, len(values), 4))
+    if len(extras) > MAX_EXTRA_MONITORS:
+        raise ValueError('Too many remote monitors')
+    for x, y, width, height in extras:
+        _size(width, height)
+        if abs(x) > 65536 or abs(y) > 65536:
+            raise ValueError('Remote monitor position out of range')
+    return fields[0], size, extras
+
+
+def resolution_request(line, verb):
+    _, size, extras = layout_request(line, (verb,))
+    if extras:
+        raise ValueError('Invalid resolution request')
+    return size
 
 
 class NativeDesktop:
@@ -158,8 +186,17 @@ class Broker:
         self.layout = layout
 
     async def read_updates(self, reader):
+        verbs = (b'RESIZE', b'LAYOUT')
+
+        def parse(line):
+            try:
+                return layout_request(line, verbs)
+            except ValueError as exc:
+                # A rejected layout keeps the current one and the lease.
+                print(json.dumps({'event': 'native-resize-rejected', 'reason': str(exc)}), flush=True)
+                return None
         while line := await reader.readline():
-            size = resolution_request(line, b'RESIZE')
+            request = parse(line)
             # Coalesce resize bursts while the user drags the client window.
             while True:
                 try:
@@ -168,10 +205,16 @@ class Broker:
                     break
                 if not line:
                     return
-                size = resolution_request(line, b'RESIZE')
+                request = parse(line) or request
+            if request is None:
+                continue
+            verb, size, extras = request
             if not self.desktop.revoked.is_set() and await self.desktop.state() == 'remote':
                 try:
-                    self.layout.resize(*size)
+                    if verb == b'LAYOUT':
+                        self.layout.resize(*size, extras=extras)
+                    else:
+                        self.layout.resize(*size)
                 except Exception as exc:
                     print(json.dumps({'event': 'native-resize-rejected', 'reason': str(exc)}), flush=True)
 
@@ -206,7 +249,9 @@ class Broker:
                 writer.write(b'DENIED!\n')
                 await writer.drain()
                 return
-            size = resolution_request(request, b'REMOTE') if request != b'REMOTE\n' else None
+            size, extras = None, ()
+            if request != b'REMOTE\n':
+                _, size, extras = layout_request(request, (b'REMOTE',))
             self.busy = owned = True  # no await between check and reservation
             if self.greeter:
                 login_reader, login_writer = await asyncio.open_unix_connection(self.gateway)
@@ -219,7 +264,7 @@ class Broker:
             self.layout.enter()
             if size:
                 try:
-                    self.layout.resize(*size)
+                    self.layout.resize(*size, extras=extras)
                 except Exception as exc:
                     # Resolution preference must not turn a usable native
                     # session into a failed login. Keep the single-screen mode.

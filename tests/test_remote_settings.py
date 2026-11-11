@@ -6,7 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from takeover.remote_settings import load_scale, save_scale, settings_path, validate_scale
+from takeover.remote_settings import (load_multi_monitor, load_scale, save_multi_monitor, save_scale,
+                                      settings_path, validate_scale)
 from takeover.monitor_layout import MonitorLayout, remote_monitor, snapshot
 from takeover.native_broker import Broker
 from test_monitor_layout import FakeBus
@@ -22,6 +23,22 @@ class SettingsTests(unittest.TestCase):
             for invalid in [True, 0, 99, 151, 201, float('nan'), '150']:
                 with self.assertRaises(ValueError): validate_scale(invalid)
             self.assertEqual(load_scale(), 175)
+
+    def test_multi_monitor_switch_is_independent_of_scale(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, XDG_CONFIG_HOME=directory):
+            self.assertTrue(load_multi_monitor())
+            save_scale(125)
+            save_multi_monitor(False)
+            save_scale(100)
+            self.assertFalse(load_multi_monitor())
+            self.assertEqual(load_scale(), 100)
+            self.assertEqual(json.loads(settings_path().read_text()),
+                             {'scale_percent': 100, 'multi_monitor': False})
+            with self.assertRaises(ValueError):
+                save_multi_monitor('off')
+            settings_path().write_text('{"multi_monitor": "yes"}')
+            with self.assertRaises(ValueError):
+                load_multi_monitor()
 
     def test_live_scale_keeps_pixel_size_and_restores_local_layout(self):
         bus = FakeBus()
