@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 from unittest.mock import AsyncMock, Mock
-from takeover.native_broker import Broker, layout_request, resolution_request
+from takeover.native_broker import Broker, initial_scale, layout_request, resolution_request
 
 
 class ResizeProtocolTests(unittest.IsolatedAsyncioTestCase):
@@ -75,6 +75,10 @@ class ResizeProtocolTests(unittest.IsolatedAsyncioTestCase):
         layout.resize.assert_called_once_with(1920, 1080, extras=((1920, 0, 1280, 1024),))
         reader.feed_eof()
         await task
+
+    def test_greeter_never_uses_the_desktop_default_scale(self):
+        self.assertEqual(initial_scale(True), 100)
+        self.assertIsNone(initial_scale(False))
 
     def test_layout_request_validation(self):
         self.assertEqual(layout_request(b'REMOTE 1920 1080\n', (b'REMOTE',)),

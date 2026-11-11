@@ -53,6 +53,17 @@ def layout_request(line, verbs):
     return fields[0], size, extras
 
 
+# The GDM greeter runs as a dynamic gdm account: it cannot read the desktop
+# user's remote-settings.json and would fall back to DEFAULT_SCALE (150%).
+# A login form is most readable 1:1, so the greeter always uses 100%.
+GREETER_SCALE = 100
+
+
+def initial_scale(greeter):
+    """Remote scale for a new broker; None reads the user's saved setting."""
+    return GREETER_SCALE if greeter else None
+
+
 def resolution_request(line, verb):
     _, size, extras = layout_request(line, (verb,))
     if extras:
@@ -335,7 +346,8 @@ async def main(args):
     try:
         if await desktop.state() not in ('local', 'ready-guarded'):
             raise RuntimeError('Patched native Mutter is unavailable or not ready')
-        layout = MonitorLayout(desktop.connection, path.parent / 'monitor-layout.json')
+        layout = MonitorLayout(desktop.connection, path.parent / 'monitor-layout.json',
+                               scale_percent=initial_scale(args.greeter))
         layout.restore()
         broker = Broker(desktop, args.session, layout, greeter=args.greeter, gateway=args.gateway)
         server = await asyncio.start_unix_server(broker.handle, path=str(path), limit=256)

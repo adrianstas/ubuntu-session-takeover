@@ -162,14 +162,24 @@ def main():
         return (connection or observer).call_sync(NAME, OBJ, NAME, method, params, None, 0, 8000, None).unpack()
 
     def inspect_local():
-        physical = call('InspectPhysical')
         from PIL import Image
-        with Image.open(ART / 'physical-local-lock.png') as image:
-            # The password field must survive tiny remote app/clock damage.
-            cx, cy = image.width // 2, image.height // 2
-            assert min(image.getpixel((cx - 190, cy + 40))[:3]) > 30, 'physical password field was clipped away'
-            assert min(image.getpixel((cx - 340, cy + 250))[:3]) > 10, 'physical authentication surface was only partially drawn'
-        return physical
+        # Adding or removing a remote-only monitor rebuilds the stage views;
+        # a rebuilt physical view has no pixels until its first (black or
+        # password UI) frame. Wait for that frame, never for longer than 3 s.
+        deadline = time.monotonic() + 3
+        while True:
+            physical = call('InspectPhysical')
+            try:
+                with Image.open(ART / 'physical-local-lock.png') as image:
+                    # The password field must survive tiny remote app/clock damage.
+                    cx, cy = image.width // 2, image.height // 2
+                    assert min(image.getpixel((cx - 190, cy + 40))[:3]) > 30, 'physical password field was clipped away'
+                    assert min(image.getpixel((cx - 340, cy + 250))[:3]) > 10, 'physical authentication surface was only partially drawn'
+                return physical
+            except AssertionError:
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(.2)
 
     def ready():
         try:
