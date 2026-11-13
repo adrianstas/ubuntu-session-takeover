@@ -53,10 +53,13 @@ def launch_files():
             'ExecStart=/usr/bin/python3 ' + str(ROOT / 'scripts/native-session.py') + '\n'
             'KillMode=control-group\nTimeoutStopSec=20\n',
         Path.home() / '.local/share/applications/ubuntu-native-takeover-settings.desktop':
-            '[Desktop Entry]\nType=Application\nName=Remote Desktop Settings\n'
-            'Comment=Adjust the scale of the remotely taken-over desktop\n'
+            '[Desktop Entry]\nType=Application\nName=UST\nGenericName=Ubuntu Session Takeover\n'
+            'Comment=Live state, scale and monitors of the remotely taken-over desktop\n'
             'Exec=/usr/bin/python3 ' + str(ROOT / 'scripts/remote-settings.py') + '\n'
-            'Icon=preferences-desktop-display\nTerminal=false\nCategories=Settings;DesktopSettings;\n',
+            'Icon=preferences-desktop-display\nTerminal=false\nCategories=Settings;DesktopSettings;\n'
+            'Keywords=ust;takeover;remote;rdp;scale;monitor;\n',
+        Path.home() / '.local/bin/ust':
+            '#!/bin/sh\nexec /usr/bin/python3 ' + str(ROOT / 'scripts/remote-settings.py') + ' "$@"\n',
         Path.home() / '.config/autostart/ubuntu-native-takeover.desktop':
             '[Desktop Entry]\nType=Application\nName=Native Desktop Remote Takeover\n'
             'Exec=/usr/bin/systemctl --user start ubuntu-native-takeover.service\n'
@@ -123,6 +126,8 @@ def setup(args):
     for path, text in files.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
+        if text.startswith('#!'):
+            path.chmod(0o755)
     subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True)
     print('Configured. Save your work, log out and log back in to Ubuntu, then connect to <this-machine-IP>:3392. The current desktop was not restarted.')
 

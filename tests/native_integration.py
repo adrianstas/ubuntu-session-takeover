@@ -370,7 +370,8 @@ def main():
                       '/multimon' if '--multimon' in sys.argv else '/size:1280x720', '/gfx:RFX',
                       '/network:lan', '/title:' + title] +
                      (['-clipboard'] if os.environ.get('NATIVE_TEST_NO_CLIPBOARD') == '1' else []) +
-                     (['/dynamic-resolution'] if '--adaptive' in sys.argv else []), client_env, title)
+                     (['/dynamic-resolution'] if '--adaptive' in sys.argv else []) +
+                     (['/scale-desktop:125'] if '--remote-scale' in sys.argv else []), client_env, title)
 
     bad = remote('NativeBadPassword', 'invalid-' + secrets.token_urlsafe(8))
     wait_for(lambda: bad.poll() is not None, 'bad password did not fail')
@@ -593,7 +594,11 @@ def main():
                                             for s, modes, _ in state[1]}
             assert hardware_modes(current) == hardware_modes(initial_monitor_state), 'Remote resize changed a physical hardware mode'
             if '--remote-scale' in sys.argv:
-                for percent in [125, 175, 200, 150]:
+                # The saved setting is 100%; only the client announced 125%.
+                assert '"scale_percent": 125' in (ART / 'broker.log').read_text(), \
+                    'The scale announced by the RDP client was not used'
+                assert viewport_layout.state()[2][0][2] == 1.25
+                for percent in [175, 200, 125]:
                     with socket.socket(socket.AF_UNIX) as control:
                         control.settimeout(8)
                         control.connect(str(gate))
@@ -604,6 +609,39 @@ def main():
                     assert scaled[2][0][2] == percent / 100
                     assert tuple(scaled[3]['native-takeover-size']) == (2560, 1440)
                     assert first.poll() is None, 'Scale change disconnected the RDP client'
+                # GNOME Settings knows nothing about the viewport. Its
+                # persistent request with a scale of the physical mode must
+                # become a scale change of the remote desktop, not a
+                # physical layout under a capture stream of another size.
+                foreign = snapshot(viewport_layout.state())
+                foreign['properties'] = {k: v for k, v in foreign['properties'].items() if k == 'layout-mode'}
+                foreign['logical'][0][2] = 1.4953271
+                viewport_layout.apply(viewport_layout.state(), foreign, method=2)
+                scaled = viewport_layout.state()
+                assert scaled[2][0][2] == 1.5, scaled[2]
+                assert tuple(scaled[3]['native-takeover-size']) == (2560, 1440)
+                assert hardware_modes(scaled) == hardware_modes(initial_monitor_state)
+                # Anything but the scale is refused. Here the request drops a
+                # physical monitor, as disabling it in the panel would.
+                if len(foreign['logical'][0][5]) > 1:
+                    fewer = json.loads(json.dumps(foreign))
+                    fewer['logical'][0][5] = fewer['logical'][0][5][:1]
+                    try:
+                        viewport_layout.apply(viewport_layout.state(), fewer, method=2)
+                    except GLib.Error:
+                        pass
+                    else:
+                        raise AssertionError('A display settings request changed the physical monitors')
+                    assert snapshot(viewport_layout.state())['logical'] == snapshot(scaled)['logical']
+                foreign['logical'].append([4000, 0, 1.0, 0, False, foreign['logical'][0][5]])
+                try:
+                    viewport_layout.apply(viewport_layout.state(), foreign, method=2)
+                except GLib.Error:
+                    pass
+                else:
+                    raise AssertionError('A foreign physical layout replaced the remote viewport')
+                assert first.poll() is None and call('GetState') == ('remote',), \
+                    'Display settings request ended the remote session'
             viewport_control.touch()
             time.sleep(3)
             before = ImageGrab.grab(xdisplay=display)

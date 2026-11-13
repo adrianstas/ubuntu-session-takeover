@@ -10,7 +10,7 @@ from pathlib import Path
 import time
 
 from gi.repository import Gio, GLib
-from takeover.remote_settings import load_scale, validate_scale
+from takeover.remote_settings import SCALES, load_scale, validate_scale
 
 NAME = 'org.gnome.Mutter.DisplayConfig'
 OBJECT = '/org/gnome/Mutter/DisplayConfig'
@@ -157,7 +157,8 @@ def arguments(serial, config, method=1):
                                      for k, v in props.items()})
                    for connector, mode, props in monitors]
         logical.append((x, y, scale, transform, primary, outputs))
-    types = {'native-takeover-size': '(uu)', 'native-takeover-extra': 'a(iiuu)'}
+    types = {'native-takeover-size': '(uu)', 'native-takeover-extra': 'a(iiuu)',
+             'native-takeover-release': 'b'}
     props = {k: GLib.Variant(types.get(k, 'u'), tuple(map(tuple, v)) if k == 'native-takeover-extra' else v)
              for k, v in config['properties'].items()}
     return GLib.Variant('(uua(iiduba(ssa{sv}))a{sv})', (serial, method, logical, props))
@@ -167,12 +168,45 @@ class MonitorLayout:
     def __init__(self, connection, journal, scale_percent=None):
         self.connection = connection
         self.journal = Path(journal)
-        self.scale_percent = load_scale() if scale_percent is None else validate_scale(scale_percent)
+        # None follows the user's saved setting; the greeter has a fixed one.
+        self.fallback_scale = None if scale_percent is None else validate_scale(scale_percent)
+        self.scale_percent = load_scale() if scale_percent is None else self.fallback_scale
         self.extras = ()
+
+    def begin_scale(self, client_percent=None):
+        """Scale of a new lease: the client's, else the saved fallback."""
+        if client_percent is not None:
+            self.scale_percent = validate_scale(client_percent)
+        elif self.fallback_scale is not None:
+            self.scale_percent = self.fallback_scale
+        else:
+            try:
+                self.scale_percent = load_scale()
+            except ValueError:
+                pass  # A damaged settings file keeps the previous scale.
+
+    @staticmethod
+    def viewport_scale(state):
+        """Scale of the live viewport; GNOME Settings may have changed it."""
+        if 'native-takeover-size' not in state[3]:
+            return None
+        primary = next((m for m in state[2] if m[4]), None)
+        percent = round(primary[2] * 100) if primary else None
+        return percent if percent in SCALES else None
 
     def effective_scale(self, state):
         # Existing desktops can keep working until the new compositor is loaded.
         return self.scale_percent if state[3].get('native-takeover-scale-supported') else 100
+
+    def describe(self):
+        """Live facts for the dashboard; small enough for one STATUS line."""
+        state = self.state()
+        size = state[3].get('native-takeover-size')
+        return {'viewport': list(size) if size else None,
+                'scale_percent': self.viewport_scale(state) or self.scale_percent,
+                'remote_only_monitors': len(virtual_connectors(state)),
+                'scale_supported': bool(state[3].get('native-takeover-scale-supported')),
+                'multi_monitor_supported': bool(state[3].get('native-takeover-multimonitor-supported'))}
 
     def set_scale(self, percent):
         percent = validate_scale(percent)
@@ -183,7 +217,8 @@ class MonitorLayout:
         self.scale_percent = percent
         try:
             if self.privacy_state() == 'remote':
-                self.resize(*state[3]['native-takeover-size'], extras=self.extras)
+                self.resize(*state[3]['native-takeover-size'], extras=self.extras,
+                            scale_percent=percent)
         except Exception:
             self.scale_percent = old
             raise
@@ -253,11 +288,16 @@ class MonitorLayout:
             f.flush()
             os.fsync(f.fileno())
 
-    def resize(self, width, height, extras=()):
+    def resize(self, width, height, extras=(), scale_percent=None):
+        """Resize the viewport; without a scale the live viewport's is kept."""
         if self.privacy_state() != 'remote':
             raise RuntimeError('Resize requires an active remote privacy barrier')
         self.extras = tuple(tuple(e) for e in extras)
         state = self.state()
+        if scale_percent is not None:
+            self.scale_percent = validate_scale(scale_percent)
+        else:
+            self.scale_percent = self.viewport_scale(state) or self.scale_percent
         target, actual = remote_monitor(state, width, height, self.effective_scale(state), self.extras)
         current = snapshot(state)
         if (target['logical'] != current['logical'] or
@@ -282,7 +322,10 @@ class MonitorLayout:
         if not self.journal.exists():
             return
         saved = json.loads(self.journal.read_text())
-        self.apply(self.state(), saved)
+        # The marker tells Mutter this is the lease owner giving the viewport
+        # up, not GNOME Settings changing the scale of the remote desktop.
+        release = dict(saved['properties'], **{'native-takeover-release': True})
+        self.apply(self.state(), dict(saved, properties=release))
         self.journal.unlink()
         print(json.dumps({'event': 'native-monitor-layout-restored'}), flush=True)
 

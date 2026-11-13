@@ -15,6 +15,8 @@ First read the [build instructions](BUILDING.md), build in a test environment th
 | `package-native.py`, `packaging/control.py` | Experimental packaging / interactive setup tools; dependencies, test evidence and target layout must be reviewed first |
 | `install-greeter-fix.py`, `install-greeter-startup-fix.py`, `install-handover-fix.py` | Upgrades of an existing install with an exact old manifest and original backups; they must refuse to run if the prerequisite state is missing |
 | `build-greeter-fix.py`, `build-handover-fix.py` | Bundle assemblers for the corresponding maintenance bundles; the latter depends on the old bundle and cannot be used to bootstrap an empty directory |
+| `deploy-runtime.py` | Host maintenance (root): copies a `dist/runtime-*` bundle beside `/opt/ubuntu-native-takeover`, checks every file against `package-files.json`, exchanges the two directories atomically and keeps the replaced one as `.prev-<time>`; `--rollback` swaps the most recent one back. Changes no unit or setting; the new Mutter loads at the next login |
+| `remote-settings.py` (menu entry "UST", command `ust`) | Runs as the desktop user, never with sudo: dashboard and `--status`, `--scale`, `--multi-monitor`; `--install-shortcut` adds the launcher to an existing installation and renames the entries an earlier setup wrote |
 | `disable-native.py`, `disable-login.py` | Explicit rollback entry points that stop or switch the related RDP backends; read the specific script and the install record first |
 | `reload-native-idle.py` | Waits for the backend to be idle and then reloads RDP; cannot update a running Mutter |
 | `tests/live_power_save.py` | Live-hardware test requiring explicit confirmation that changes display power and lease state; not part of default CI |

@@ -16,7 +16,7 @@ import struct
 
 from gi.repository import Gio, GLib
 from takeover.monitor_layout import MonitorLayout
-from takeover.remote_settings import save_scale, validate_scale
+from takeover.remote_settings import client_scale, save_scale, validate_scale
 
 NAME = 'org.gnome.Mutter.NativeTakeover'
 OBJECT = '/org/gnome/Mutter/NativeTakeover'
@@ -32,12 +32,27 @@ def _size(width, height):
     return width, height
 
 
+def _scale_field(field):
+    return field[:1] in (b'S', 'S') and field[1:].isdigit()
+
+
+def requested_scale(line):
+    """Scale the RDP client announced in a trailing 'S<percent>', else None."""
+    fields = line.split()
+    if len(fields) < 2 or not _scale_field(fields[-1]):
+        return None
+    return client_scale(int(fields[-1][1:]))
+
+
 def layout_request(line, verbs):
-    """Parse 'VERB w h [x y w h]...': the viewport, then extra monitors.
+    """Parse 'VERB w h [x y w h]... [S<percent>]': viewport, extra monitors.
 
     Extra positions are client pixels relative to the viewport's top-left.
+    The optional client scale is read with requested_scale().
     """
     fields = line.split()
+    if len(fields) > 1 and _scale_field(fields[-1]):
+        fields.pop()
     if (not fields or fields[0] not in verbs or len(fields) < 3 or
             (len(fields) - 3) % 4):
         raise ValueError('Invalid layout request')
@@ -53,14 +68,14 @@ def layout_request(line, verbs):
     return fields[0], size, extras
 
 
-# The GDM greeter runs as a dynamic gdm account: it cannot read the desktop
-# user's remote-settings.json and would fall back to DEFAULT_SCALE (150%).
-# A login form is most readable 1:1, so the greeter always uses 100%.
+# The scale announced by the RDP client always wins. Without one the desktop
+# uses the user's saved setting. The GDM greeter runs as a dynamic gdm account
+# and cannot read that file, so its fallback is a 1:1 login form.
 GREETER_SCALE = 100
 
 
 def initial_scale(greeter):
-    """Remote scale for a new broker; None reads the user's saved setting."""
+    """Fallback scale of a new broker; None reads the user's saved setting."""
     return GREETER_SCALE if greeter else None
 
 
@@ -195,13 +210,16 @@ class Broker:
         self.session = session
         self.busy = False
         self.layout = layout
+        # Last scale the client announced in this lease. Only a change is
+        # applied, so a manual scale survives resizing the client window.
+        self.client_scale = None
 
     async def read_updates(self, reader):
         verbs = (b'RESIZE', b'LAYOUT')
 
         def parse(line):
             try:
-                return layout_request(line, verbs)
+                return layout_request(line, verbs) + (requested_scale(line),)
             except ValueError as exc:
                 # A rejected layout keeps the current one and the lease.
                 print(json.dumps({'event': 'native-resize-rejected', 'reason': str(exc)}), flush=True)
@@ -219,13 +237,15 @@ class Broker:
                 request = parse(line) or request
             if request is None:
                 continue
-            verb, size, extras = request
+            verb, size, extras, scale = request
             if not self.desktop.revoked.is_set() and await self.desktop.state() == 'remote':
+                options = {}
+                if verb == b'LAYOUT':
+                    options['extras'] = extras
+                if scale is not None and scale != self.client_scale:
+                    options['scale_percent'] = self.client_scale = scale
                 try:
-                    if verb == b'LAYOUT':
-                        self.layout.resize(*size, extras=extras)
-                    else:
-                        self.layout.resize(*size)
+                    self.layout.resize(*size, **options)
                 except Exception as exc:
                     print(json.dumps({'event': 'native-resize-rejected', 'reason': str(exc)}), flush=True)
 
@@ -252,8 +272,16 @@ class Broker:
                 await writer.drain()
                 return
             if request == b'STATUS\n':
-                writer.write((json.dumps({'native_state': await self.desktop.state(),
-                                          'remote': self.busy, 'session': self.session}) + '\n').encode())
+                status = {'native_state': await self.desktop.state(),
+                          'remote': self.busy, 'session': self.session}
+                try:
+                    # Dashboard facts; never a reason to fail the health check.
+                    status.update(dict(self.layout.describe()),
+                                  client_scale=self.client_scale if self.busy else None)
+                    json.dumps(status)
+                except Exception:
+                    status = {key: status[key] for key in ('native_state', 'remote', 'session')}
+                writer.write((json.dumps(status) + '\n').encode())
                 await writer.drain()
                 return
             if (request != b'REMOTE\n' and not request.startswith(b'REMOTE ')) or self.busy:
@@ -264,6 +292,8 @@ class Broker:
             if request != b'REMOTE\n':
                 _, size, extras = layout_request(request, (b'REMOTE',))
             self.busy = owned = True  # no await between check and reservation
+            self.client_scale = requested_scale(request)
+            self.layout.begin_scale(self.client_scale)
             if self.greeter:
                 login_reader, login_writer = await asyncio.open_unix_connection(self.gateway)
                 login_writer.write((json.dumps({'command':'lease','role':'greeter',
@@ -275,7 +305,8 @@ class Broker:
             self.layout.enter()
             if size:
                 try:
-                    self.layout.resize(*size, extras=extras)
+                    self.layout.resize(*size, extras=extras,
+                                       scale_percent=self.layout.scale_percent)
                 except Exception as exc:
                     # Resolution preference must not turn a usable native
                     # session into a failed login. Keep the single-screen mode.

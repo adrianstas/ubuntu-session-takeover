@@ -51,13 +51,51 @@
  } MetaMonitorManagerPrivate;
  
  G_DEFINE_TYPE_WITH_PRIVATE (MetaMonitorManager, meta_monitor_manager,
-@@ -680,6 +682,42 @@
+@@ -680,6 +682,80 @@
    meta_monitors_config_set_parent_config (config, base_config);
  }
  
 +/* Client placement of remote-only monitors for the current viewport lease. */
 +static MetaNativeExtraMonitor native_extra[META_NATIVE_MAX_EXTRA_MONITORS];
 +static unsigned int n_native_extra;
++
++/* Set while a request that does not know the viewport (GNOME Settings) is
++ * applied as a scale change of the remote desktop. */
++static gboolean native_foreign_scale;
++
++/* Such a request may change nothing but the scale: the same physical
++ * monitors in the same modes as the passengers of the current viewport. */
++static gboolean
++native_request_keeps_monitors (MetaLogicalMonitorConfig *request,
++                               MetaLogicalMonitorConfig *viewport)
++{
++  if (g_list_length (request->monitor_configs) !=
++      g_list_length (viewport->monitor_configs))
++    return FALSE;
++
++  for (GList *l = request->monitor_configs; l; l = l->next)
++    {
++      MetaMonitorConfig *wanted = l->data;
++      gboolean found = FALSE;
++
++      for (GList *c = viewport->monitor_configs; c && !found; c = c->next)
++        {
++          MetaMonitorConfig *current = c->data;
++
++          found = meta_monitor_spec_equals (wanted->monitor_spec,
++                                            current->monitor_spec) &&
++                  wanted->mode_spec->width == current->mode_spec->width &&
++                  wanted->mode_spec->height == current->mode_spec->height &&
++                  wanted->mode_spec->refresh_rate == current->mode_spec->refresh_rate &&
++                  wanted->mode_spec->refresh_rate_mode == current->mode_spec->refresh_rate_mode &&
++                  wanted->mode_spec->flags == current->mode_spec->flags;
++        }
++      if (!found)
++        return FALSE;
++    }
++
++  return TRUE;
++}
 +
 +/* While an authenticated viewport is current, monitor changes must not
 + * replace it with a stored or linear physical layout: remote-only monitors
@@ -94,7 +132,7 @@
  MetaMonitorsConfig *
  meta_monitor_manager_ensure_configured (MetaMonitorManager *manager)
  {
-@@ -693,6 +731,10 @@
+@@ -693,6 +769,10 @@
    MetaMonitorsConfig *previous_config;
    g_autoptr (GList) existing_configs = NULL;
    GList *l;
@@ -105,7 +143,7 @@
  
    use_stored_config = should_use_stored_config (manager);
    if (use_stored_config)
-@@ -979,24 +1021,50 @@
+@@ -979,24 +1059,50 @@
    return TRUE;
  }
  
@@ -163,7 +201,7 @@
      }
  
    if (!manager->panel_orientation_managed)
-@@ -1120,23 +1188,18 @@
+@@ -1120,23 +1226,18 @@
    meta_dbus_display_config_set_panel_orientation_managed (manager->display_config,
                                                            manager->panel_orientation_managed);
  
@@ -195,7 +233,7 @@
        if (current_config)
          {
            g_autoptr (MetaMonitorsConfig) config = NULL;
-@@ -2242,6 +2305,11 @@
+@@ -2242,6 +2343,11 @@
                                   g_variant_new_int32 (min_refresh_rate));
          }
  
@@ -207,7 +245,7 @@
        is_for_lease = meta_monitor_is_for_lease (monitor);
        g_variant_builder_add (&monitor_properties_builder, "{sv}",
                               "is-for-lease",
-@@ -2306,6 +2374,41 @@
+@@ -2306,6 +2412,41 @@
    g_variant_builder_init (&properties_builder, G_VARIANT_TYPE ("a{sv}"));
    capabilities = meta_monitor_manager_get_capabilities (manager);
  
@@ -249,7 +287,7 @@
    g_variant_builder_add (&properties_builder, "{sv}",
                           "layout-mode",
                           g_variant_new_uint32 (manager->layout_mode));
-@@ -2462,7 +2565,8 @@
+@@ -2462,7 +2603,8 @@
                return FALSE;
              }
  
@@ -259,7 +297,7 @@
                                                                     config,
                                                                     monitor,
                                                                     monitor_mode,
-@@ -2721,6 +2825,7 @@
+@@ -2721,6 +2863,7 @@
  create_logical_monitor_config_from_variant (MetaMonitorManager          *manager,
                                              GVariant                    *logical_monitor_config_variant,
                                              MetaLogicalMonitorLayoutMode layout_mode,
@@ -267,10 +305,12 @@
                                              GError                     **error)
  {
    MetaLogicalMonitorConfig *logical_monitor_config;
-@@ -2741,6 +2846,12 @@
+@@ -2741,6 +2884,14 @@
                   &is_primary,
                   &monitor_configs_iter);
    scale = (float) scale_d;
++  if (native_size && native_foreign_scale)
++    scale = CLAMP (roundf (scale * 4) / 4, 1.0f, 2.0f);
 +  if (native_size && (!isfinite (scale) || scale < 1.0f || scale > 2.0f))
 +    {
 +      g_variant_iter_free (monitor_configs_iter);
@@ -280,7 +320,7 @@
  
    while (TRUE)
      {
-@@ -2777,7 +2888,7 @@
+@@ -2777,7 +2928,7 @@
      }
  
    first_monitor_config = monitor_configs->data;
@@ -289,7 +329,7 @@
                                  layout_mode,
                                  first_monitor_config,
                                  scale,
-@@ -2803,6 +2914,24 @@
+@@ -2803,6 +2954,24 @@
      .monitor_configs = monitor_configs
    };
  
@@ -314,7 +354,7 @@
    if (!meta_verify_logical_monitor_config (logical_monitor_config,
                                             layout_mode,
                                             manager,
-@@ -2913,6 +3042,10 @@
+@@ -2913,6 +3082,10 @@
    const MetaMonitorConfigPolicy *policy;
    MetaMonitorManagerCapability capabilities;
    g_autoptr (GVariant) layout_mode_variant = NULL;
@@ -325,12 +365,51 @@
    MetaLogicalMonitorLayoutMode layout_mode;
    GVariantIter logical_monitor_configs_iter;
    g_autoptr (MetaMonitorsConfig) config = NULL;
-@@ -2974,6 +3107,60 @@
+@@ -2974,6 +3147,99 @@
        return G_DBUS_METHOD_INVOCATION_HANDLED;
      }
  
 +  native_size = g_variant_lookup_value (properties_variant,
 +                                        "native-takeover-size", NULL);
++  MetaLogicalMonitorConfig *native_foreign_viewport = NULL;
++  native_foreign_scale = FALSE;
++  if (!native_size && g_getenv ("MUTTER_NATIVE_TAKEOVER") &&
++      meta_native_privacy_has_lease ())
++    {
++      g_autoptr (GVariant) native_release =
++        g_variant_lookup_value (properties_variant,
++                                "native-takeover-release", NULL);
++      MetaMonitorsConfig *native_current =
++        meta_monitor_config_manager_get_current (manager->config_manager);
++      MetaLogicalMonitorConfig *native_viewport = NULL;
++
++      for (GList *native_l = native_current && !native_release ?
++                               native_current->logical_monitor_configs : NULL;
++           native_l; native_l = native_l->next)
++        {
++          MetaLogicalMonitorConfig *logical = native_l->data;
++          if (logical->native_takeover_viewport)
++            native_viewport = logical;
++        }
++      if (native_viewport)
++        {
++          if (g_variant_n_children (logical_monitor_configs_variant) != 1)
++            {
++              g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
++                                                     G_DBUS_ERROR_INVALID_ARGS,
++                                                     "The remote session owns the display layout; only its scale can be changed");
++              return G_DBUS_METHOD_INVOCATION_HANDLED;
++            }
++          native_size = g_variant_ref_sink (
++            g_variant_new ("(uu)", native_viewport->native_viewport_width,
++                           native_viewport->native_viewport_height));
++          native_foreign_scale = TRUE;
++          native_foreign_viewport = native_viewport;
++          /* Never a persistent physical setup, and no confirmation dialog. */
++          if (method == META_MONITORS_CONFIG_METHOD_PERSISTENT)
++            method = META_MONITORS_CONFIG_METHOD_TEMPORARY;
++        }
++    }
 +  if (native_size &&
 +      (!g_variant_is_of_type (native_size, G_VARIANT_TYPE ("(uu)")) ||
 +       !meta_native_privacy_has_lease () ||
@@ -386,7 +465,7 @@
    g_variant_iter_init (&logical_monitor_configs_iter,
                         logical_monitor_configs_variant);
    while (TRUE)
-@@ -2989,6 +3176,7 @@
+@@ -2989,6 +3255,7 @@
          create_logical_monitor_config_from_variant (manager,
                                                      logical_monitor_config_variant,
                                                      layout_mode,
@@ -394,7 +473,27 @@
                                                      &error);
        g_variant_unref (logical_monitor_config_variant);
  
-@@ -3017,6 +3205,18 @@
+@@ -3002,6 +3269,19 @@
+           return G_DBUS_METHOD_INVOCATION_HANDLED;
+         }
+ 
++      if (native_foreign_viewport &&
++          !native_request_keeps_monitors (logical_monitor_config,
++                                          native_foreign_viewport))
++        {
++          meta_logical_monitor_config_free (logical_monitor_config);
++          g_list_free_full (logical_monitor_configs,
++                            (GDestroyNotify) meta_logical_monitor_config_free);
++          g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
++                                                 G_DBUS_ERROR_INVALID_ARGS,
++                                                 "The remote session owns the display layout; only its scale can be changed");
++          return G_DBUS_METHOD_INVOCATION_HANDLED;
++        }
++
+       logical_monitor_configs = g_list_append (logical_monitor_configs,
+                                                logical_monitor_config);
+     }
+@@ -3017,6 +3297,18 @@
                                            for_lease_monitor_specs,
                                            layout_mode,
                                            META_MONITORS_CONFIG_FLAG_NONE);
@@ -413,7 +512,7 @@
    if (!meta_verify_monitors_config (config, manager, &error))
      {
        g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
-@@ -3048,6 +3248,14 @@
+@@ -3048,6 +3340,14 @@
                                               G_DBUS_ERROR_INVALID_ARGS,
                                               "%s", error->message);
        return G_DBUS_METHOD_INVOCATION_HANDLED;
@@ -3084,7 +3183,7 @@
    *frame_rate = meta_monitor_mode_get_refresh_rate (mode);
  
    return TRUE;
-@@ -603,6 +605,33 @@
+@@ -603,6 +605,42 @@
      }
  
    color_state = meta_screen_cast_stream_src_get_color_state (src);
@@ -3115,10 +3214,19 @@
 +      g_object_unref (fb);
 +      return success;
 +    }
++
++  /* clutter_stage_paint_to_buffer() reads rect * scale pixels back, whatever
++   * the size of the stream buffer is. */
++  if (width != (int) roundf (logical_monitor->rect.width * scale) ||
++      height != (int) roundf (logical_monitor->rect.height * scale))
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Stale capture size");
++      return FALSE;
++    }
  
    if (!clutter_stage_paint_to_buffer (stage, &logical_monitor->rect, scale,
                                        data,
-@@ -980,6 +1009,32 @@
+@@ -980,6 +1018,32 @@
    *out_y = (int) roundf (cursor_position.y);
  }
  
@@ -3151,7 +3259,7 @@
  static void
  meta_screen_cast_monitor_stream_src_set_cursor_metadata (MetaScreenCastStreamSrc *src,
                                                           struct spa_meta_cursor  *spa_meta_cursor)
-@@ -1191,6 +1246,8 @@
+@@ -1191,6 +1255,8 @@
      meta_screen_cast_monitor_stream_src_record_to_framebuffer;
    src_class->queue_follow_up =
      meta_screen_cast_monitor_stream_queue_follow_up;

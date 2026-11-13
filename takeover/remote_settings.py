@@ -17,6 +17,16 @@ def validate_scale(percent):
     return int(percent)
 
 
+def client_scale(percent):
+    """Scale announced by the RDP client, as a supported remote scale.
+
+    Clients send 100..500 percent; 0 or anything else means "not announced".
+    """
+    if isinstance(percent, bool) or not isinstance(percent, int) or not 100 <= percent <= 500:
+        return None
+    return min(SCALES, key=lambda scale: (abs(scale - percent), scale))
+
+
 def _load():
     try:
         settings = json.loads(settings_path().read_text())

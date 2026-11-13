@@ -14,7 +14,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / 'build/target-ci'
-PROFILE = 'ubuntu-26.04-amd64-gnome-50.1-host-multimon-20261111'
+PROFILE = 'ubuntu-26.04-amd64-gnome-50.1-host-scale-20261113'
 
 
 def digest(path):
@@ -115,6 +115,8 @@ def main():
                  ('shell', ['tests/native_integration.py', '--shell', '--boot-guard']),
                  ('desktop', ['tests/native_integration.py']),
                  ('multimon', ['tests/native_integration.py', '--multimon']),
+                 ('scale', ['tests/native_integration.py', '--adaptive', '--exact-viewport', '--remote-scale',
+                            '--two-monitors']),
                  ('gateway', ['tests/native_integration.py', '--gateway-handover-probe']),
                  ('gateway-reject', ['tests/native_integration.py', '--gateway-handover-probe', '--reject-handover'])]
     for name, arguments in scenarios:

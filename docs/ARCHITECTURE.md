@@ -41,4 +41,12 @@ The supervisor waits only for explicit startup states; it does not take over `re
 
 Display-layout restore records belong to the user's runtime directory, and temporary changes are not written to the permanent display configuration. When a monitor's identity changes the record is kept and reported, so old parameters are never applied to a different device.
 
+## Remote display and scale
+
+GRD sends the broker one line per layout: `REMOTE|LAYOUT|RESIZE w h [x y w h]... [S<percent>]`. The first size is the viewport, each further group one extra client monitor, and the optional last field the desktop scale the RDP client announced (`DesktopScaleFactor`, taken from the primary monitor on a display-control update). The broker rounds it to 100, 125, 150, 175 or 200% and applies it when the lease starts and whenever the announced value changes; an unchanged value is ignored, so a scale chosen by hand survives resizing the client window. Without the field the saved setting is used (the greeter: 100%).
+
+`SCALE <percent>` on the same socket changes the scale of a running session and saves it as the fallback; `STATUS` returns one JSON line with the lease state plus `viewport`, `scale_percent`, `remote_only_monitors`, `client_scale` and what the running compositor supports. The UST dashboard (`takeover/remote_settings_ui.py`) uses only these two commands.
+
+While a lease holds the viewport, Mutter treats an `ApplyMonitorsConfig` call that does not come from the broker (GNOME Settings, `gdctl`) as a request about the remote desktop: with exactly one logical monitor, and the same monitors and modes as now, its scale is applied to the viewport as a temporary configuration (quarter steps, 1.0 to 2.0); anything else is rejected with an error. The broker marks its own restore with `native-takeover-release`, so giving the viewport up is never mistaken for such a request. Screen-cast read-back skips a frame whose buffer no longer matches the stream size, which is what crashed the compositor on a scale change before.
+
 Early shared-desktop modules such as `takeover/broker.py` and `workspace.py`, and some test helper files, are kept for historical regression and source reference; the current native 3392 data path does not use the old local RDP viewer.

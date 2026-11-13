@@ -272,6 +272,78 @@ edit(file, '  g_variant_iter_init (&logical_monitor_configs_iter,\n             
 
   g_variant_iter_init (&logical_monitor_configs_iter,
                        logical_monitor_configs_variant);''')
+# GNOME Settings (or any other client) knows nothing about the viewport. Its
+# configuration used to replace the viewport with the physical modes while the
+# capture stream still had the client's size, which crashed the compositor.
+# During a lease such a request can only change the scale of the remote
+# desktop; the lease owner marks its own release of the viewport.
+edit(file, '''  native_size = g_variant_lookup_value (properties_variant,
+                                        "native-takeover-size", NULL);''',
+     '''  native_size = g_variant_lookup_value (properties_variant,
+                                        "native-takeover-size", NULL);
+  MetaLogicalMonitorConfig *native_foreign_viewport = NULL;
+  native_foreign_scale = FALSE;
+  if (!native_size && g_getenv ("MUTTER_NATIVE_TAKEOVER") &&
+      meta_native_privacy_has_lease ())
+    {
+      g_autoptr (GVariant) native_release =
+        g_variant_lookup_value (properties_variant,
+                                "native-takeover-release", NULL);
+      MetaMonitorsConfig *native_current =
+        meta_monitor_config_manager_get_current (manager->config_manager);
+      MetaLogicalMonitorConfig *native_viewport = NULL;
+
+      for (GList *native_l = native_current && !native_release ?
+                               native_current->logical_monitor_configs : NULL;
+           native_l; native_l = native_l->next)
+        {
+          MetaLogicalMonitorConfig *logical = native_l->data;
+          if (logical->native_takeover_viewport)
+            native_viewport = logical;
+        }
+      if (native_viewport)
+        {
+          if (g_variant_n_children (logical_monitor_configs_variant) != 1)
+            {
+              g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
+                                                     G_DBUS_ERROR_INVALID_ARGS,
+                                                     "The remote session owns the display layout; only its scale can be changed");
+              return G_DBUS_METHOD_INVOCATION_HANDLED;
+            }
+          native_size = g_variant_ref_sink (
+            g_variant_new ("(uu)", native_viewport->native_viewport_width,
+                           native_viewport->native_viewport_height));
+          native_foreign_scale = TRUE;
+          native_foreign_viewport = native_viewport;
+          /* Never a persistent physical setup, and no confirmation dialog. */
+          if (method == META_MONITORS_CONFIG_METHOD_PERSISTENT)
+            method = META_MONITORS_CONFIG_METHOD_TEMPORARY;
+        }
+    }''')
+# Display panels offer the scales of the physical mode (for example 1.4953);
+# the viewport takes the nearest quarter step.
+edit(file, '''      logical_monitor_configs = g_list_append (logical_monitor_configs,
+                                               logical_monitor_config);''',
+     '''      if (native_foreign_viewport &&
+          !native_request_keeps_monitors (logical_monitor_config,
+                                          native_foreign_viewport))
+        {
+          meta_logical_monitor_config_free (logical_monitor_config);
+          g_list_free_full (logical_monitor_configs,
+                            (GDestroyNotify) meta_logical_monitor_config_free);
+          g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
+                                                 G_DBUS_ERROR_INVALID_ARGS,
+                                                 "The remote session owns the display layout; only its scale can be changed");
+          return G_DBUS_METHOD_INVOCATION_HANDLED;
+        }
+
+      logical_monitor_configs = g_list_append (logical_monitor_configs,
+                                               logical_monitor_config);''')
+edit(file, '''  scale = (float) scale_d;
+  if (native_size && (''', '''  scale = (float) scale_d;
+  if (native_size && native_foreign_scale)
+    scale = CLAMP (roundf (scale * 4) / 4, 1.0f, 2.0f);
+  if (native_size && (''')
 edit(file, '                                                    layout_mode,\n                                                    &error);',
      '                                                    layout_mode,\n                                                    native_size,\n                                                    &error);')
 edit(file, '  capabilities = meta_monitor_manager_get_capabilities (manager);\n\n  g_variant_builder_add (&properties_builder,',
@@ -376,6 +448,15 @@ edit(file, '  if (!clutter_stage_paint_to_buffer (stage, &logical_monitor->rect,
       g_object_unref (bitmap);
       g_object_unref (fb);
       return success;
+    }
+
+  /* clutter_stage_paint_to_buffer() reads rect * scale pixels back, whatever
+   * the size of the stream buffer is. */
+  if (width != (int) roundf (logical_monitor->rect.width * scale) ||
+      height != (int) roundf (logical_monitor->rect.height * scale))
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Stale capture size");
+      return FALSE;
     }
 
   if (!clutter_stage_paint_to_buffer (stage, &logical_monitor->rect, scale,''')
@@ -685,6 +766,44 @@ edit(file, 'MetaMonitorsConfig *\nmeta_monitor_manager_ensure_configured (MetaMo
      '''/* Client placement of remote-only monitors for the current viewport lease. */
 static MetaNativeExtraMonitor native_extra[META_NATIVE_MAX_EXTRA_MONITORS];
 static unsigned int n_native_extra;
+
+/* Set while a request that does not know the viewport (GNOME Settings) is
+ * applied as a scale change of the remote desktop. */
+static gboolean native_foreign_scale;
+
+/* Such a request may change nothing but the scale: the same physical
+ * monitors in the same modes as the passengers of the current viewport. */
+static gboolean
+native_request_keeps_monitors (MetaLogicalMonitorConfig *request,
+                               MetaLogicalMonitorConfig *viewport)
+{
+  if (g_list_length (request->monitor_configs) !=
+      g_list_length (viewport->monitor_configs))
+    return FALSE;
+
+  for (GList *l = request->monitor_configs; l; l = l->next)
+    {
+      MetaMonitorConfig *wanted = l->data;
+      gboolean found = FALSE;
+
+      for (GList *c = viewport->monitor_configs; c && !found; c = c->next)
+        {
+          MetaMonitorConfig *current = c->data;
+
+          found = meta_monitor_spec_equals (wanted->monitor_spec,
+                                            current->monitor_spec) &&
+                  wanted->mode_spec->width == current->mode_spec->width &&
+                  wanted->mode_spec->height == current->mode_spec->height &&
+                  wanted->mode_spec->refresh_rate == current->mode_spec->refresh_rate &&
+                  wanted->mode_spec->refresh_rate_mode == current->mode_spec->refresh_rate_mode &&
+                  wanted->mode_spec->flags == current->mode_spec->flags;
+        }
+      if (!found)
+        return FALSE;
+    }
+
+  return TRUE;
+}
 
 /* While an authenticated viewport is current, monitor changes must not
  * replace it with a stored or linear physical layout: remote-only monitors

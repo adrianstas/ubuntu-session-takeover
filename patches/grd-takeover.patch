@@ -15,7 +15,7 @@
 +#define NATIVE_MAX_MONITOR_COUNT 4
 +
 +static gboolean native_multimon_enabled (void);
-+static char *native_layout_line (GrdRdpMonitorConfig *monitor_config, const char *verb);
++static char *native_layout_line (GrdRdpMonitorConfig *monitor_config, const char *verb, uint32_t fallback_scale);
  #define MAX_MONITOR_COUNT_SCREEN_SHARE 1
  #define DISCRETE_SCROLL_STEP 10.0
  #define ELEMENT_TYPE_CERTIFICATE 32
@@ -43,7 +43,7 @@
    if (is_using_remote_login (session_rdp))
      return TRUE;
  
-@@ -1203,14 +1218,23 @@
+@@ -1203,14 +1218,25 @@
        return FALSE;
      }
  
@@ -64,12 +64,14 @@
 +          monitor_config->native_hybrid = TRUE;
 +          g_clear_pointer (&session_rdp->native_layout_request, g_free);
 +          session_rdp->native_layout_request =
-+            native_layout_line (monitor_config, "REMOTE");
++            native_layout_line (monitor_config, "REMOTE",
++                                freerdp_settings_get_uint32 (rdp_settings,
++                                                             FreeRDP_DesktopScaleFactor));
 +        }
      }
    else
      {
-@@ -1233,7 +1257,8 @@
+@@ -1233,7 +1259,8 @@
        return FALSE;
      }
  
@@ -79,7 +81,7 @@
      {
        freerdp_settings_set_uint32 (rdp_settings, FreeRDP_DesktopWidth,
                                     monitor_config->desktop_width);
-@@ -1252,6 +1277,188 @@
+@@ -1252,6 +1279,222 @@
    return TRUE;
  }
  
@@ -138,6 +140,8 @@
 +  return G_SOURCE_REMOVE;
 +}
 +
++static void append_native_scale (GString *line, uint32_t scale);
++
 +static gboolean
 +acquire_takeover (GrdSessionRdp *session_rdp)
 +{
@@ -166,9 +170,18 @@
 +  if (session_rdp->native_layout_request)
 +    request = g_steal_pointer (&session_rdp->native_layout_request);
 +  else if (g_getenv ("GRD_NATIVE_TAKEOVER"))
-+    request = g_strdup_printf ("REMOTE %u %u\n",
-+      freerdp_settings_get_uint32 (session_rdp->peer->context->settings, FreeRDP_DesktopWidth),
-+      freerdp_settings_get_uint32 (session_rdp->peer->context->settings, FreeRDP_DesktopHeight));
++    {
++      rdpSettings *native_settings = session_rdp->peer->context->settings;
++      GString *line = g_string_new (NULL);
++
++      g_string_append_printf (line, "REMOTE %u %u",
++        freerdp_settings_get_uint32 (native_settings, FreeRDP_DesktopWidth),
++        freerdp_settings_get_uint32 (native_settings, FreeRDP_DesktopHeight));
++      append_native_scale (line,
++        freerdp_settings_get_uint32 (native_settings, FreeRDP_DesktopScaleFactor));
++      g_string_append_c (line, '\n');
++      request = g_string_free (line, FALSE);
++    }
 +  else
 +    request = g_strdup ("REMOTE\n");
 +  if (!g_output_stream_write_all (g_io_stream_get_output_stream (G_IO_STREAM (connection)),
@@ -198,13 +211,25 @@
 +         g_strcmp0 (g_getenv ("GRD_NATIVE_MULTIMON"), "1") == 0;
 +}
 +
-+/* "VERB w h [x y w h]...": the primary (viewport) size, then every other
-+ * client monitor relative to it. RDP places the primary monitor at 0,0. */
++/* The client's desktop scale as a trailing " S<percent>", if it sent one. */
++static void
++append_native_scale (GString  *line,
++                     uint32_t  scale)
++{
++  if (scale >= 100 && scale <= 500)
++    g_string_append_printf (line, " S%u", scale);
++}
++
++/* "VERB w h [x y w h]... [S<percent>]": the primary (viewport) size, then
++ * every other client monitor relative to it, then the client's scale of the
++ * primary monitor. RDP places the primary monitor at 0,0. */
 +static char *
 +native_layout_line (GrdRdpMonitorConfig *monitor_config,
-+                    const char          *verb)
++                    const char          *verb,
++                    uint32_t             fallback_scale)
 +{
 +  GString *line = g_string_new (verb);
++  uint32_t scale = fallback_scale;
 +  uint32_t i;
 +
 +  for (i = 0; i < monitor_config->monitor_count; ++i)
@@ -212,7 +237,11 @@
 +      GrdRdpVirtualMonitor *monitor = &monitor_config->virtual_monitors[i];
 +
 +      if (monitor->is_primary)
-+        g_string_append_printf (line, " %u %u", monitor->width, monitor->height);
++        {
++          g_string_append_printf (line, " %u %u", monitor->width, monitor->height);
++          if (monitor->scale)
++            scale = monitor->scale;
++        }
 +    }
 +  for (i = 0; i < monitor_config->monitor_count; ++i)
 +    {
@@ -222,6 +251,7 @@
 +        g_string_append_printf (line, " %d %d %u %u", monitor->pos_x,
 +                                monitor->pos_y, monitor->width, monitor->height);
 +    }
++  append_native_scale (line, scale);
 +  g_string_append_c (line, '\n');
 +
 +  return g_string_free (line, FALSE);
@@ -238,7 +268,7 @@
 +    return FALSE;
 +  if (!session_rdp->takeover_connection)
 +    return TRUE;
-+  request = native_layout_line (monitor_config, "LAYOUT");
++  request = native_layout_line (monitor_config, "LAYOUT", 0);
 +  if (!g_output_stream_write_all (
 +        g_io_stream_get_output_stream (G_IO_STREAM (session_rdp->takeover_connection)),
 +        request, strlen (request), NULL, NULL, &error))
@@ -249,15 +279,21 @@
 +gboolean
 +grd_session_rdp_resize_native (GrdSessionRdp *session_rdp,
 +                              uint32_t width,
-+                              uint32_t height)
++                              uint32_t height,
++                              uint32_t scale)
 +{
 +  g_autofree char *request = NULL;
 +  g_autoptr (GError) error = NULL;
++  GString *line;
 +  if (!g_getenv ("GRD_NATIVE_TAKEOVER"))
 +    return FALSE;
 +  if (!session_rdp->takeover_connection)
 +    return TRUE;
-+  request = g_strdup_printf ("RESIZE %u %u\n", width, height);
++  line = g_string_new (NULL);
++  g_string_append_printf (line, "RESIZE %u %u", width, height);
++  append_native_scale (line, scale);
++  g_string_append_c (line, '\n');
++  request = g_string_free (line, FALSE);
 +  if (!g_output_stream_write_all (
 +        g_io_stream_get_output_stream (G_IO_STREAM (session_rdp->takeover_connection)),
 +        request, strlen (request), NULL, NULL, &error))
@@ -268,7 +304,7 @@
  static void
  notify_post_connected (gpointer user_data)
  {
-@@ -1261,6 +1468,22 @@
+@@ -1261,6 +1504,22 @@
    g_mutex_lock (&session_rdp->notify_post_connected_mutex);
    session_rdp->notify_post_connected_source_id = 0;
    g_mutex_unlock (&session_rdp->notify_post_connected_mutex);
@@ -291,7 +327,7 @@
  
    grd_rdp_session_metrics_notify_phase_completion (session_rdp->session_metrics,
                                                     GRD_RDP_PHASE_POST_CONNECT);
-@@ -1341,6 +1564,9 @@
+@@ -1341,6 +1600,9 @@
          rdp_peer_context->network_autodetection,
          GRD_RDP_NW_AUTODETECT_RTT_CONSUMER_RDPGFX);
      }
@@ -301,7 +337,7 @@
  
    set_rdp_peer_flag (session_rdp, RDP_PEER_ACTIVATED);
  
-@@ -1445,7 +1671,8 @@
+@@ -1445,7 +1707,8 @@
    rdpPrivateKey *rdp_private_key = NULL;
  
    use_client_configs = session_rdp->screen_share_mode ==
@@ -311,7 +347,7 @@
  
    g_debug ("Initialize RDP session");
  
-@@ -1540,7 +1767,15 @@
+@@ -1540,7 +1803,15 @@
    freerdp_settings_set_bool (rdp_settings, FreeRDP_TlsSecurity, FALSE);
    freerdp_settings_set_bool (rdp_settings, FreeRDP_NlaSecurity, TRUE);
  
@@ -328,7 +364,7 @@
      {
        freerdp_settings_set_string (rdp_settings, FreeRDP_Username, username);
        freerdp_settings_set_string (rdp_settings, FreeRDP_Password, password);
-@@ -1972,14 +2207,17 @@
+@@ -1972,14 +2243,17 @@
      grd_rdp_dvc_input_new (session_rdp->layout_manager,
                             session_rdp, dvc_handler, vcm);
  
@@ -348,7 +384,7 @@
      }
    if (WTSVirtualChannelManagerIsChannelJoined (vcm, CLIPRDR_SVC_CHANNEL_NAME))
      {
-@@ -2088,6 +2326,8 @@
+@@ -2088,6 +2362,8 @@
  
    g_assert (!session_rdp->notify_post_connected_source_id);
    g_assert (!session_rdp->cursor_renderer);
@@ -357,7 +393,7 @@
  
    g_clear_object (&session_rdp->layout_manager);
    clear_rdp_peer (session_rdp);
-@@ -2123,6 +2363,8 @@
+@@ -2123,6 +2399,8 @@
  static void
  grd_session_rdp_init (GrdSessionRdp *session_rdp)
  {
@@ -373,24 +409,36 @@
  
  GSocketConnection *grd_session_rdp_get_socket_connection (GrdSessionRdp *session_rdp);
 +
-+gboolean grd_session_rdp_resize_native (GrdSessionRdp *session_rdp, uint32_t width, uint32_t height);
++gboolean grd_session_rdp_resize_native (GrdSessionRdp *session_rdp, uint32_t width, uint32_t height, uint32_t scale);
 +
 +struct _GrdRdpMonitorConfig;
 +gboolean grd_session_rdp_update_native_layout (GrdSessionRdp *session_rdp, struct _GrdRdpMonitorConfig *monitor_config);
 --- a/src/grd-rdp-dvc-display-control.c
 +++ b/src/grd-rdp-dvc-display-control.c
-@@ -142,6 +142,15 @@
+@@ -142,6 +142,27 @@
             monitor_layout_pdu->NumMonitors,
             monitor_layout_pdu->NumMonitors == 1 ? "" : "s");
  
 +  if (grd_session_rdp_update_native_layout (session_rdp, monitor_config))
 +    monitor_config->native_hybrid = TRUE;
-+  else if (grd_session_rdp_resize_native (session_rdp,
-+                                          monitor_config->desktop_width,
-+                                          monitor_config->desktop_height))
++  else
 +    {
-+      grd_rdp_monitor_config_free (monitor_config);
-+      return CHANNEL_RC_OK;
++      uint32_t native_scale = 0;
++      uint32_t native_i;
++
++      for (native_i = 0; native_i < monitor_config->monitor_count; ++native_i)
++        {
++          if (monitor_config->virtual_monitors[native_i].is_primary)
++            native_scale = monitor_config->virtual_monitors[native_i].scale;
++        }
++      if (grd_session_rdp_resize_native (session_rdp,
++                                         monitor_config->desktop_width,
++                                         monitor_config->desktop_height,
++                                         native_scale))
++        {
++          grd_rdp_monitor_config_free (monitor_config);
++          return CHANNEL_RC_OK;
++        }
 +    }
    grd_rdp_layout_manager_submit_new_monitor_config (layout_manager,
                                                      monitor_config);
